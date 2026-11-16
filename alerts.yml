@@ -1,0 +1,125 @@
+# Rules observe this single-host experiment; they do not terminate processes.
+# Missing resource metrics cannot establish healthy resource usage. Scrape and
+# monitor freshness alerts report collection gaps separately. Index progress
+# may be absent when eth_syncing returns false; absence is never called zero.
+groups:
+  - name: archive-health
+    rules:
+      - alert: GethScrapeFailed
+        expr: up{job="geth"} == 0
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: Geth metrics have been unavailable for two minutes
+          description: Check Geth and its metrics endpoint; missing samples do not indicate idle work.
+
+      - alert: NodeExporterScrapeFailed
+        expr: up{job="node"} == 0
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: Host metrics have been unavailable for two minutes
+          description: CPU, memory, disk and monitor textfile observations are unavailable.
+
+      - alert: MonitorStale
+        expr: >-
+          (time() - archive_monitor_last_success_timestamp_seconds{job="node"} > 60)
+          or absent(archive_monitor_last_success_timestamp_seconds{job="node"})
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: The shell monitor has no recent successful observation
+          description: Its last successful RPC and alert collection is over 60 seconds old or missing; check monitor.log.
+
+      - alert: NodeTextfileReadError
+        expr: node_textfile_scrape_error{job="node"} != 0
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: Node exporter cannot read a monitor textfile
+          description: Check the textfile directory permissions and Prometheus text syntax.
+
+      - alert: GethRPCUnavailable
+        expr: archive_rpc_reachable{job="node"} == 0
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: Geth RPC has been unavailable for two minutes
+          description: Sync and index progress cannot be determined; check geth.log and monitor.log.
+
+      - alert: HostMemoryLow
+        expr: node_memory_MemAvailable_bytes{job="node"} < 2 * 1024 * 1024 * 1024
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: Available host memory has stayed below 2 GiB
+          description: This covers all host processes, including Geth and the monitoring services.
+
+      - alert: ArchiveDiskSpaceLow
+        expr: >-
+          archive_disk_available_ratio{job="node"}
+          < on(disk) archive_disk_reserve_ratio{job="node"}
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: '{{ $labels.disk }} free space is below its configured reserve'
+          description: Check the actual configured data mount. The rule records an alert and does not prune data or stop Geth.
+
+      - alert: HostSwapActivity
+        expr: >-
+          sum(rate(node_vmstat_pswpin{job="node"}[5m])
+          + rate(node_vmstat_pswpout{job="node"}[5m])) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: The host has sustained swap activity
+          description: Inspect available memory and sync progress; this is an observation, not an automatic stop condition.
+
+      - alert: HostIOWaitHigh
+        expr: avg(rate(node_cpu_seconds_total{job="node",mode="iowait"}[5m])) > 0.30
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: Host CPU iowait has stayed above 30 percent
+          description: Inspect disk queues and throughput. This includes I/O from processes other than Geth.
+
+      - alert: GethCPUHigh
+        expr: >-
+          system_cpu_procload{job="geth"}
+          > 90 * scalar(count(node_cpu_seconds_total{job="node",mode="idle"}))
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: Geth has used over 90 percent of host CPU capacity
+          description: High CPU can be normal during sync. Observe progress and resource pressure; this rule does not stop Geth.
+
+      - alert: ArchiveSyncStalled
+        expr: >-
+          (changes(chain_head_block{job="geth"}[15m]) == 0)
+          and (count_over_time(chain_head_block{job="geth"}[15m]) >= 55)
+          and on() (archive_target_reached{job="node"} == 0)
+          and on() (archive_rpc_reachable{job="node"} == 1)
+          and on() (time() - archive_monitor_last_success_timestamp_seconds{job="node"} < 60)
+          and on() (up{job="geth"} == 1)
+          and on()
+          ((changes(archive_state_index_remaining{job="node"}[15m]) == 0)
+          or absent_over_time(archive_state_index_remaining{job="node"}[15m]))
+          and on()
+          ((changes(archive_trienode_index_remaining{job="node"}[15m]) == 0)
+          or absent_over_time(archive_trienode_index_remaining{job="node"}[15m]))
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: No observed block or history index progress before the target
+          description: Block height has not changed in the last 15 minutes, with enough scrapes to exclude startup, and neither history index reports progress. Missing index fields mean unknown, not complete. Inspect peers and logs; no restart is performed.

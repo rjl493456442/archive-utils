@@ -1,0 +1,27 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  scrape_timeout: 10s
+
+rule_files:
+  - /etc/prometheus/alerts.yml
+
+# Prometheus owns the only Geth metrics scrape. ResettingTimer snapshots are
+# consumed by a scrape, including a request to the JSON metrics endpoint.
+scrape_configs:
+  - job_name: geth
+    metrics_path: /debug/metrics/prometheus
+    # Geth sends text/plain without a version parameter. Prometheus 3 needs
+    # an explicit fallback when the response lacks a supported content type.
+    fallback_scrape_protocol: PrometheusText0.0.4
+    static_configs:
+      - targets: ["127.0.0.1:6060"]
+  - job_name: node
+    static_configs:
+      - targets: ["127.0.0.1:9100"]
+  - job_name: prometheus
+    static_configs:
+      - targets: ["127.0.0.1:9090"]
+
+# No Alertmanager is needed: monitor.sh records /api/v1/alerts locally.
+# There is no metric filtering: Geth's full exposed registry is retained.
